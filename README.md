@@ -49,7 +49,7 @@ printf "🧦\n✨\nOK\n" > ~/sock
 
 ## Start on login
 
-The macOS-friendly local install is a per-user LaunchAgent, not a daemon. A LaunchAgent runs inside your login session, so it can show a menu bar item. The included installer builds the binary, installs it under `~/Library/Application Support/sock-emoji`, and registers a `launchd` plist under `~/Library/LaunchAgents`.
+The macOS-friendly local install is via a per-user LaunchAgent, not a daemon. A LaunchAgent runs inside your login session, so it can show a menu bar item, all without needing root. The included installer builds the binary, installs it under `~/Library/Application Support/sock-emoji`, and registers a `launchd` plist under `~/Library/LaunchAgents`.
 
 ```bash
 chmod +x scripts/install-launch-agent.sh scripts/uninstall-launch-agent.sh
