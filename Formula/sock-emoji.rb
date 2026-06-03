@@ -1,12 +1,12 @@
 class SockEmoji < Formula
   desc "Tiny macOS menu bar ticker fed by a named pipe"
-  homepage "https://github.com/YOUR_GITHUB_USER/sock-emoji"
+  homepage "https://github.com/OffPeakEngineer/sock-emoji"
 
-  # Replace these with a real release tarball URL and SHA-256 when publishing a tap.
-  url "https://github.com/YOUR_GITHUB_USER/sock-emoji/archive/refs/tags/v0.1.0.tar.gz"
+  # Replace this with the real release tarball SHA-256 when publishing v0.1.0.
+  url "https://github.com/OffPeakEngineer/sock-emoji/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
-  head "https://github.com/YOUR_GITHUB_USER/sock-emoji.git", branch: "main"
+  head "https://github.com/OffPeakEngineer/sock-emoji.git", branch: "main"
 
   depends_on "go" => :build
 

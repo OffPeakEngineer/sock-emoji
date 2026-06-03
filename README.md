@@ -76,7 +76,14 @@ scripts/uninstall-launch-agent.sh
 
 ## Homebrew
 
-There is a Homebrew formula template at `Formula/sock-emoji.rb`. Before publishing it in a tap, replace the placeholder GitHub URL and SHA-256 with a real release tarball:
+There is a Homebrew formula template at `Formula/sock-emoji.rb`. Until there is a tagged release with a real SHA-256, install the current branch with:
+
+```bash
+brew install --HEAD ./Formula/sock-emoji.rb
+brew services start sock-emoji
+```
+
+Before publishing a stable release in a tap, create a release tarball and replace the placeholder SHA-256:
 
 ```bash
 git archive --format=tar.gz --prefix=sock-emoji-0.1.0/ -o sock-emoji-0.1.0.tar.gz v0.1.0
@@ -86,15 +93,16 @@ shasum -a 256 sock-emoji-0.1.0.tar.gz
 Then update:
 
 ```ruby
-url "https://github.com/YOUR_GITHUB_USER/sock-emoji/archive/refs/tags/v0.1.0.tar.gz"
+url "https://github.com/OffPeakEngineer/sock-emoji/archive/refs/tags/v0.1.0.tar.gz"
 sha256 "..."
-head "https://github.com/YOUR_GITHUB_USER/sock-emoji.git", branch: "main"
+head "https://github.com/OffPeakEngineer/sock-emoji.git", branch: "main"
 ```
 
-Once tapped, install and start on login with:
+Once a tap is published, install and start on login with:
 
 ```bash
-brew install YOUR_GITHUB_USER/tap/sock-emoji
+brew tap OffPeakEngineer/tap
+brew install OffPeakEngineer/tap/sock-emoji
 brew services start sock-emoji
 ```
 
