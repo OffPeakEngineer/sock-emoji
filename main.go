@@ -1,25 +1,16 @@
 package main
 
-/*
-#cgo darwin LDFLAGS: -framework Cocoa
-#include <stdlib.h>
-#include "statusbar_darwin.h"
-*/
-import "C"
-
 import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
-	"unsafe"
 )
 
 type tickerConfig struct {
@@ -28,48 +19,100 @@ type tickerConfig struct {
 }
 
 func main() {
-	runtime.LockOSThread()
-
-	pathFlag := flag.String("pipe", "~/sock", "FIFO path to receive text updates (echo \"🧦\" > ~/sock)")
-	widthFlag := flag.Int("width", 1, "number of visible Unicode clusters at a time")
-	delayFlag := flag.Duration("delay", 200*time.Millisecond, "delay between ticker updates")
+	path := flag.String("pipe", defaultPipe, "pipe to receive newline-delimited UTF-8 updates")
+	listen := flag.Bool("listen", false, "start the tray app even when stdin is redirected")
+	config := tickerConfig{width: 1, delay: 200 * time.Millisecond}
+	if runtime.GOOS == "darwin" {
+		flag.IntVar(&config.width, "width", 1, "number of visible Unicode clusters at a time")
+		flag.DurationVar(&config.delay, "delay", 200*time.Millisecond, "delay between ticker updates")
+	}
 	flag.Parse()
-
-	config := tickerConfig{
-		width: max(1, *widthFlag),
-		delay: maxDuration(10*time.Millisecond, *delayFlag),
+	config.width = max(1, config.width)
+	config.delay = maxDuration(10*time.Millisecond, config.delay)
+	pipePath, err := expandPath(*path)
+	if err == nil {
+		if !*listen && hasRedirectedInput(os.Stdin) {
+			err = sendInput(pipePath, os.Stdin)
+		} else {
+			err = runPlatform(pipePath, config)
+		}
 	}
-
-	pipePath, err := expandPath(*pathFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to expand path: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-
-	if err := preparePipe(pipePath); err != nil {
-		fmt.Fprintf(os.Stderr, "unable to prepare pipe %s: %v\n", pipePath, err)
-		os.Exit(1)
-	}
-
-	initialTitle := C.CString("🧦")
-	C.initStatusBar(initialTitle)
-	C.free(unsafe.Pointer(initialTitle))
-
-	updates := make(chan string, 1)
-	go watchPipe(pipePath, updates)
-	go runTicker(updates, config)
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		C.stopApp()
-	}()
-
-	C.runApp()
-	C.cleanupStatusBar()
 }
 
+func hasRedirectedInput(input *os.File) bool {
+	info, err := input.Stat()
+	// Explorer-launched Windows GUI apps may have no stdin handle. A console
+	// or /dev/null also means normal startup; only a pipe or file means sender.
+	return err == nil && (info.Mode()&os.ModeNamedPipe != 0 || info.Mode().IsRegular())
+}
+
+func sendInput(path string, input io.Reader) error {
+	conn, err := dialUpdatePipe(path)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w (start sock-emoji -listen first)", path, err)
+	}
+	// Stream immediately so long-running producers need not exit to update the
+	// icon. Closing the connection also delivers a final unterminated line.
+	_, copyErr := io.Copy(conn, input)
+	// Windows pipe writes can finish while bytes are still buffered. Drain them
+	// to the reader before closing this short-lived sender's pipe handle.
+	if flusher, ok := conn.(interface{ Flush() error }); ok && copyErr == nil {
+		copyErr = flusher.Flush()
+	}
+	closeErr := conn.Close()
+	if copyErr != nil {
+		return fmt.Errorf("forward stdin: %w", copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close sender: %w", closeErr)
+	}
+	return nil
+}
+
+// Concurrent writers never block; newer status replaces pending status.
+func sendLatest(updates chan string, value string) {
+	for {
+		select {
+		case updates <- value:
+			return
+		default:
+		}
+		select {
+		case <-updates:
+		default:
+		}
+	}
+}
+
+func readUpdates(r io.Reader, updates chan string) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
+	first := true
+	for scanner.Scan() {
+		line := scanner.Text()
+		if first {
+			line = strings.TrimPrefix(line, "\ufeff")
+			first = false
+		}
+		value := strings.TrimSpace(strings.ToValidUTF8(line, ""))
+		if value != "" && !strings.ContainsRune(value, 0) {
+			sendLatest(updates, value)
+		}
+	}
+	return scanner.Err()
+}
+
+func iconText(value string) string {
+	clusters := splitClusters(value)
+	if len(clusters) == 0 {
+		return ""
+	}
+	return clusters[0]
+}
 func expandPath(path string) (string, error) {
 	if path == "~" || strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
@@ -82,100 +125,6 @@ func expandPath(path string) (string, error) {
 		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
 	}
 	return path, nil
-}
-
-func preparePipe(path string) error {
-	info, err := os.Lstat(path)
-	if err == nil {
-		if info.Mode()&os.ModeNamedPipe == 0 {
-			return fmt.Errorf("path exists and is not a FIFO")
-		}
-		return nil
-	}
-	if !os.IsNotExist(err) {
-		return err
-	}
-	return syscall.Mkfifo(path, 0600)
-}
-
-func watchPipe(path string, updates chan string) {
-	for {
-		f, err := os.OpenFile(path, os.O_RDONLY, 0600)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "open pipe failed: %v\n", err)
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
-		for scanner.Scan() {
-			value := strings.TrimSpace(scanner.Text())
-			if value != "" {
-				sendLatest(updates, value)
-			}
-		}
-		err = scanner.Err()
-		f.Close()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "read pipe failed: %v\n", err)
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-	}
-}
-
-func sendLatest(updates chan string, value string) {
-	select {
-	case updates <- value:
-	default:
-		select {
-		case <-updates:
-		default:
-		}
-		updates <- value
-	}
-}
-
-func runTicker(updates <-chan string, config tickerConfig) {
-	for {
-		value, ok := <-updates
-		if !ok {
-			return
-		}
-
-	animate:
-		clusters := splitClusters(strings.ToValidUTF8(value, ""))
-		if len(clusters) == 0 {
-			continue
-		}
-
-		frames := tickerFrames(clusters, config.width)
-		for i, frame := range frames {
-			updateStatus(frame)
-
-			if i == len(frames)-1 || config.delay <= 0 {
-				continue
-			}
-
-			timer := time.NewTimer(config.delay)
-			select {
-			case next, ok := <-updates:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				if !ok {
-					return
-				}
-				value = next
-				goto animate
-			case <-timer.C:
-			}
-		}
-	}
 }
 
 func tickerFrames(clusters []string, width int) []string {
@@ -235,13 +184,6 @@ func isClusterExtender(r rune) bool {
 
 func isRegionalIndicator(r rune) bool {
 	return r >= '\U0001f1e6' && r <= '\U0001f1ff'
-}
-
-func updateStatus(value string) {
-	value = strings.ToValidUTF8(value, "")
-	cstr := C.CString(value)
-	defer C.free(unsafe.Pointer(cstr))
-	C.setStatusBarTitle(cstr)
 }
 
 func maxDuration(a, b time.Duration) time.Duration {

@@ -35,3 +35,27 @@ jobs:
 
       - name: Formula style
         run: brew style Formula/sock-emoji.rb
+
+  windows:
+    name: Windows test and build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test named pipes and icon rendering
+        run: go test -race -timeout 60s ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build AMD64
+        run: go build -ldflags=-H=windowsgui -o sock-emoji-amd64.exe .
+      - name: Build ARM64
+        env:
+          GOARCH: arm64
+          CGO_ENABLED: '0'
+        run: go build -ldflags=-H=windowsgui -o sock-emoji-arm64.exe .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sock-emoji-windows
+          path: sock-emoji-*.exe
